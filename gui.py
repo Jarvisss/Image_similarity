@@ -1,10 +1,10 @@
-from PyQt5.QtCore import pyqtSignal, QRect, Qt, QRegExp
-from PyQt5.QtGui import QImage, QPixmap,QIntValidator
-from PyQt5.QtWidgets import (QWidget, QPushButton, QDesktopWidget,QRadioButton,QButtonGroup,
-                             QHBoxLayout, QVBoxLayout, QMainWindow, QLabel, QGridLayout, QProgressBar, QCheckBox,QLineEdit)
+from PyQt5.QtCore import pyqtSignal, QRect, Qt
+from PyQt5.QtGui import QPixmap,QIntValidator
+from PyQt5.QtWidgets import QWidget, QPushButton, QDesktopWidget,QRadioButton,QButtonGroup, QHBoxLayout, QVBoxLayout, QMainWindow, QLabel, QGridLayout, QProgressBar, QCheckBox,QLineEdit, QFileDialog
 from image_database import ImageDB
 import cvhelper
-import cv2
+import os
+
 
 class ImageDropLabel(QLabel):
     dropImgSignal = pyqtSignal(object)
@@ -84,8 +84,15 @@ class DragImageBox(QWidget):
     def __init__(self):
         super(DragImageBox, self).__init__()
         self.image_path = ''
-        self.imdb = ImageDB('轮廓图')
+        self.data_dir = QFileDialog.getExistingDirectory(self,"选择数据所在目录",os.getcwd())
+        self.imdb = ImageDB(self.data_dir)
+
         self.imnum = len(self.imdb.img_paths)
+        while self.imnum <=0:
+            print("该文件夹下无图片，请重新选择")
+            self.data_dir = QFileDialog.getExistingDirectory(self,"选择数据所在目录",os.getcwd())
+            self.imdb = ImageDB(self.data_dir)
+            self.imnum = len(self.imdb.img_paths)
         self.initUI()
 
         self.img_label.dropImgSignal.connect(self.updateByImgDrop)
@@ -117,6 +124,10 @@ class DragImageBox(QWidget):
         self.max_angle = 360
         self.method = 'scd'
         self.img_label = ImageDropLabel()
+
+        self.img_num_label = QLabel("{0}\n图片数量:{1}".format(self.data_dir, str(self.imnum)))
+
+        self.img_num_label.setWordWrap(True)
         self.name_label = QLabel()
         self.name_label.setAlignment(Qt.AlignCenter)
         self.start_button = QPushButton()
@@ -125,7 +136,6 @@ class DragImageBox(QWidget):
         self.radio_hu = QRadioButton()
         self.radio_sc = QRadioButton()
         self.radio_haus = QRadioButton()
-        QRegExp("[0-9]+$")
         self.sample_checkbox=QCheckBox()
         self.sample_checkbox.setText('Sample')
         self.sample_checkbox.setChecked(True)
@@ -185,6 +195,7 @@ class DragImageBox(QWidget):
 
         vbox = QVBoxLayout()
         vbox.addStretch(1)
+        vbox.addWidget(self.img_num_label)
         vbox.addWidget(self.img_label)
         vbox.addWidget(self.name_label)
         vbox.addWidget(self.radio_hu)
@@ -407,7 +418,7 @@ class SimpleImageBox(QWidget):
         # cv_img = cvhelper.cv_rotate(cv_img, rot_angle)
         qimg = cvhelper.cv_toQimage(cv_img)
         self.img_label.setPixmap(
-            QPixmap(qimg.scaled(self.img_label.size(),Qt.IgnoreAspectRatio, Qt.SmoothTransformation)))
+            QPixmap(qimg.scaled(self.img_label.size(),Qt.KeepAspectRatio, Qt.SmoothTransformation)))
 
     def setFlip(self,flip):
         if flip:

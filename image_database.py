@@ -167,7 +167,8 @@ class ImageDB(QThread):
                         if not os.path.exists(save_dir):
                             os.makedirs(save_dir)
                         for i in cm:
-                            blank[int(i[0][1]), int(i[0][0])] = 0
+                            cv2.circle(blank, (i[0][0],i[0][1]), radius=1, color=(0,0,0), thickness=-1)
+                            # blank[int(i[0][1]), int(i[0][0])] = 0
                         cv2.imencode('.jpg', blank)[1].tofile(save_path)
 
                     print(len(cm), end=" ")
