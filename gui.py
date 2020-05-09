@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import (QWidget, QPushButton, QDesktopWidget,QRadioButton,Q
                              QHBoxLayout, QVBoxLayout, QMainWindow, QLabel, QGridLayout, QProgressBar, QCheckBox,QLineEdit)
 from image_database import ImageDB
 import cvhelper
+import cv2
 
 class ImageDropLabel(QLabel):
     dropImgSignal = pyqtSignal(object)
@@ -59,7 +60,6 @@ class SortView(QWidget):
         for i in range(4):
             for j in range(5):
                 simple_box = SimpleImageBox()
-                # simple_box.setImage()
                 grid.addWidget(simple_box, i, j)
 
         self.setLayout(grid)
@@ -72,8 +72,10 @@ class SortView(QWidget):
     def updateSimilarity(self, sorted_list):
         for i in range(20):
             self.layout().itemAt(i).widget().setName(sorted_list[i][0].split('\\')[-1].split('.')[0])
-            self.layout().itemAt(i).widget().setSimilarity(sorted_list[i][1])
-            self.layout().itemAt(i).widget().setImage(sorted_list[i][0])
+            self.layout().itemAt(i).widget().setSimilarity(sorted_list[i][1][0])
+            self.layout().itemAt(i).widget().setImage(sorted_list[i][0],sorted_list[i][1][1],sorted_list[i][1][2])
+            self.layout().itemAt(i).widget().setAngle(sorted_list[i][1][2])
+            self.layout().itemAt(i).widget().setFlip(sorted_list[i][1][1])
 
         self.setVisible(True)
         pass
@@ -92,9 +94,12 @@ class DragImageBox(QWidget):
         self.resize_checkbox.stateChanged.connect(self.setResize)
         self.sample_checkbox.stateChanged.connect(self.setSample)
         self.sample_edit.textChanged.connect(self.setSr)
+        self.iter_edit.textChanged.connect(self.setIters)
+        self.angle_edit.textChanged.connect(self.setAngleStep)
         self.resize_w.textChanged.connect(self.setW)
         self.resize_h.textChanged.connect(self.setH)
         self.smooth.stateChanged.connect(self.setSmooth)
+        self.rotation_invariant.stateChanged.connect(self.setRotInv)
         self.show_interm.stateChanged.connect(self.setVisualize)
         self.imdb.step_signal.connect(self.updatePbar)
         self.imdb.done_signal.connect(self.endCal)
@@ -106,8 +111,11 @@ class DragImageBox(QWidget):
         self.max_h = 2048
         self.min_samples = 50
         self.max_samples = 500
+        self.min_iters = 1
+        self.max_iters = 10
+        self.min_angle = 1
+        self.max_angle = 360
         self.method = 'scd'
-        self.samples = 200
         self.img_label = ImageDropLabel()
         self.name_label = QLabel()
         self.name_label.setAlignment(Qt.AlignCenter)
@@ -122,24 +130,41 @@ class DragImageBox(QWidget):
         self.sample_checkbox.setText('Sample')
         self.sample_checkbox.setChecked(True)
         self.sample_edit =QLineEdit()
-        self.sample_edit.setValidator(QIntValidator(0, 400))
-        self.sample_edit.setText(str(200))
+        self.sample_edit.setValidator(QIntValidator(self.min_samples, self.max_samples))
+        self.sample_edit.setText(str(self.imdb.sample_rate))
         self.sample_edit.setPlaceholderText('%d> 采样点数 >%d' % (self.max_samples, self.min_samples))
+
+
+        self.iter_label = QLabel('Iter')
+        self.iter_edit = QLineEdit()
+        self.iter_edit.setValidator(QIntValidator(self.min_iters, self.max_iters))
+        self.iter_edit.setText(str(self.imdb.iterations))
+        self.iter_edit.setPlaceholderText('%d> 迭代次数 >%d' % (self.max_iters, self.min_iters))
+
+        self.angle_label = QLabel('Angle Step')
+        self.angle_edit = QLineEdit()
+        self.angle_edit.setValidator(QIntValidator(self.min_angle, self.max_angle))
+        self.angle_edit.setText(str(self.imdb.rot_angle))
+        self.angle_edit.setPlaceholderText('%d> 旋转角度 >%d' % (self.max_angle, self.min_angle))
 
         self.resize_checkbox=QCheckBox()
         self.resize_checkbox.setText('Resize')
-        self.resize_checkbox.setChecked(True)
+        self.resize_checkbox.setChecked(self.imdb.do_resize)
         self.resize_w = QLineEdit()
         self.resize_w.setPlaceholderText('%d> 宽度 >%d'%(self.max_w, self.min_w))
         self.resize_h = QLineEdit()
         self.resize_h.setPlaceholderText('%d> 高度 >%d'%(self.max_h, self.min_h))
-        self.resize_w.setValidator(QIntValidator(0,self.max_w))
-        self.resize_h.setValidator(QIntValidator(0,self.max_h))
-        self.resize_w.setText(str(512))
-        self.resize_h.setText(str(512))
+        self.resize_w.setValidator(QIntValidator(self.min_w, self.max_w))
+        self.resize_h.setValidator(QIntValidator(self.min_h, self.max_h))
+        self.resize_w.setText(str(self.imdb.resize_w))
+        self.resize_h.setText(str(self.imdb.resize_h))
         self.smooth = QCheckBox()
         self.smooth.setText('Smooth')
         self.smooth.setChecked(False)
+
+        self.rotation_invariant = QCheckBox()
+        self.rotation_invariant.setText('Rotation Invariant')
+        self.rotation_invariant.setChecked(False)
 
         self.show_interm = QCheckBox()
         self.show_interm.setText('可视化')
@@ -170,17 +195,33 @@ class DragImageBox(QWidget):
         vhbox0.addWidget(self.sample_checkbox)
         vhbox0.addWidget(self.sample_edit)
         vbox.addLayout(vhbox0)
+
         vhbox1 = QHBoxLayout()
         vhbox1.addWidget(self.resize_checkbox)
         vhbox1.addWidget(self.resize_w)
         vhbox1.addWidget(self.resize_h)
         vbox.addLayout(vhbox1)
-        vbox.addWidget(self.smooth)
-        # vbox.addWidget(self.show_interm)
-        vhbox = QHBoxLayout()
-        vhbox.addWidget(self.progress_label)
-        vhbox.addWidget(self.progress_bar)
-        vbox.addLayout(vhbox)
+        vhbox2 = QHBoxLayout()
+        # vhbox2.addWidget(self.iter_label)
+        # vhbox2.addWidget(self.iter_edit)
+        vhbox2.addWidget(self.smooth)
+        vhbox2.addWidget(self.rotation_invariant)
+
+        vhbox3 = QHBoxLayout()
+        vhbox3.addWidget(self.iter_label)
+        vhbox3.addWidget(self.iter_edit)
+
+        vhbox4 = QHBoxLayout()
+        vhbox4.addWidget(self.angle_label)
+        vhbox4.addWidget(self.angle_edit)
+
+        vbox.addLayout(vhbox2)
+        vbox.addLayout(vhbox3)
+        vbox.addLayout(vhbox4)
+        progress_bar_hbox = QHBoxLayout()
+        progress_bar_hbox.addWidget(self.progress_label)
+        progress_bar_hbox.addWidget(self.progress_bar)
+        vbox.addLayout(progress_bar_hbox)
         vbox.addStretch(1)
         hbox = QHBoxLayout()
         hbox.addStretch(1)
@@ -200,6 +241,9 @@ class DragImageBox(QWidget):
         self.sample_edit.setText(str(self.imdb.sample_rate))
         self.resize_h.setText(str(self.imdb.resize_h))
         self.resize_w.setText(str(self.imdb.resize_w))
+        self.angle_edit.setText(str(self.imdb.rot_angle))
+        self.iter_edit.setText(str(self.imdb.iterations))
+
         self.imdb.start()
         self.start_button.setEnabled(False)
         self.progress_bar.setStep(1)
@@ -245,14 +289,37 @@ class DragImageBox(QWidget):
             self.imdb.do_smooth = True
         pass
 
-    def setVisualize(self,state):
+    def setRotInv(self, state):
+        if state == Qt.Unchecked:
+            self.imdb.rotation_invariant = False
+        else:
+            self.imdb.rotation_invariant = True
+        pass
+
+    def setVisualize(self, state):
         if state == Qt.Unchecked:
             self.imdb.visualize = False
         else:
             self.imdb.visualize = True
         pass
 
+    def setIters(self, txt):
+        if len(txt)==0 or int(txt) < self.min_iters:
+            self.imdb.iterations = self.min_iters
+        elif int(txt) > self.max_iters:
+            self.imdb.iterations = self.max_iters
+        else:
+            self.imdb.iterations = int(txt)
 
+    def setAngleStep(self, txt):
+        if len(txt)==0 or int(txt) < self.min_angle:
+            # self.resize_h.setText(str(self.min_h))
+            self.imdb.rot_angle = self.min_angle
+        elif int(txt) > self.max_angle:
+            # self.resize_h.setText(str(self.max_h))
+            self.imdb.rot_angle = self.max_angle
+        else:
+            self.imdb.rot_angle = int(txt)
 
     def setSr(self, txt):
         if len(txt)==0 or int(txt) < self.min_samples:
@@ -284,7 +351,6 @@ class DragImageBox(QWidget):
 
 
 
-
 class SimpleImageBox(QWidget):
     def __init__(self):
         super(SimpleImageBox, self).__init__()
@@ -296,17 +362,36 @@ class SimpleImageBox(QWidget):
         self.img_label.setAlignment(Qt.AlignCenter)
         self.name_label = QLabel()
         self.similarity_label = QLabel()
-
+        self.flip_label = QLabel()
+        self.angle_label = QLabel()
         vbox = QVBoxLayout()
         self.img_label.setFixedSize(150, 150)
         self.img_label.setStyleSheet('border: 2px dashed black; border-radius:10px; ')
         self.name_label.setFixedHeight(15)
+        self.name_label.setAlignment(Qt.AlignCenter)
         self.similarity_label.setFixedHeight(15)
+        self.similarity_label.setAlignment(Qt.AlignCenter)
+        self.similarity_label.setStyleSheet('color:green;')
+        self.flip_label.setFixedHeight(15)
+        self.flip_label.setAlignment(Qt.AlignCenter)
+        self.angle_label.setFixedHeight(15)
+        self.angle_label.setAlignment(Qt.AlignCenter)
+
+        hbox = QHBoxLayout()
+        hbox.addWidget(self.flip_label)
+        hbox.addWidget(self.angle_label)
+
 
         vbox.addWidget(self.img_label)
         vbox.addWidget(self.name_label)
         vbox.addWidget(self.similarity_label)
-        self.setLayout(vbox)
+        vbox.addLayout(hbox)
+
+        hhbox = QHBoxLayout()
+        hhbox.addStretch(1)
+        hhbox.addLayout(vbox)
+        hhbox.addStretch(1)
+        self.setLayout(hhbox)
         pass
 
     def setSimilarity(self, sim):
@@ -315,9 +400,31 @@ class SimpleImageBox(QWidget):
     def setName(self, name):
         self.name_label.setText(str(name))
 
-    def setImage(self, path):
+    def setImage(self, path, flip, rot_angle):
+        cv_img = cvhelper.cv_imread(path)
+        # if flip:
+        #     cv_img = cv2.flip(cv_img, 1)
+        # cv_img = cvhelper.cv_rotate(cv_img, rot_angle)
+        qimg = cvhelper.cv_toQimage(cv_img)
         self.img_label.setPixmap(
-            QPixmap(QImage(path).scaled(self.img_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+            QPixmap(qimg.scaled(self.img_label.size(),Qt.IgnoreAspectRatio, Qt.SmoothTransformation)))
+
+    def setFlip(self,flip):
+        if flip:
+            self.flip_label.setText('翻转')
+            self.flip_label.setStyleSheet("color:blue;")
+        else:
+            self.flip_label.setText('正常')
+            self.flip_label.setStyleSheet("")
+
+    def setAngle(self, angle):
+        if angle > 0:
+            self.angle_label.setText('旋转角度:%d' % angle)
+            self.angle_label.setStyleSheet("color:blue;")
+        else:
+            self.angle_label.setText('无旋转')
+            self.angle_label.setStyleSheet("")
+
 
 class ProgressBar(QWidget):
     def __init__(self, max_val):

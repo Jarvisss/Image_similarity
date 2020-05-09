@@ -1,10 +1,11 @@
 import os
 import measure_img_sim
-from idsc import  IDSC
-from cvhelper import cv_toBinary,cv_imread,cv_getLongestContour
+from idsc import IDSC
+from cvhelper import cv_toBinary,cv_imread,cv_rotate
 import numpy as np
 from scipy.spatial.distance import euclidean
 import cv2
+import sys
 from PyQt5.QtCore import pyqtSignal, QThread
 
 
@@ -18,6 +19,8 @@ def getImagesInDir(root_path):
 
     return img_paths
 
+
+
 class ImageDB(QThread):
     step_signal = pyqtSignal(int)
     done_signal = pyqtSignal(list)
@@ -26,15 +29,20 @@ class ImageDB(QThread):
         self.img_paths = getImagesInDir(img_db_root)
         self.method = 'scd'
         self.query_path = ''
-        self.sample_rate = 200
+        self.sample_rate = 100
         self.do_sample = True
         self.do_resize = True
         self.do_smooth = False
-        self.rotation_invariant=False
+        self.rotation_invariant = False
         self.visualize = True
-        self.save = True
+        self.save_countours = True
         self.resize_w = 2**9
         self.resize_h = 2**9
+        self.iterations = 3
+        self.rot_angle = 30
+        self.img_query_group = []
+        self.counter_query_group = []
+        self.sim_dict = {}
         pass
 
     def _sample_contour_points(self, contour_points, n):
@@ -55,6 +63,11 @@ class ImageDB(QThread):
 
     def set_sample_rate(self, n):
         self.sample_rate = n
+
+    def set_angle_step(self, angle):
+        self.rot_angle = angle
+
+
     """
     run(query_path, method) -> retval
     .   @brief get image similarities of query image and images in the database, by the given method type
@@ -64,10 +77,34 @@ class ImageDB(QThread):
     """
     def run(self):
 
-        if self.query_path=='':
+        if self.query_path == '':
             return
         sim_dict = {}
+        sim_dict_flipped = {}
         img = cv_imread(self.query_path)
+        resized_q = cv2.resize(img, (self.resize_w, self.resize_h)) if self.do_resize else img
+        resized_qbinary = cv_toBinary(resized_q, self.do_smooth)
+        self.img_query_group.clear()
+        self.counter_query_group.clear()
+        for i in range(360//self.rot_angle):
+            rot = cv_rotate(img, i*self.rot_angle)
+            rot_flip = cv_rotate(cv2.flip(img,1), i*self.rot_angle)
+            resized_q = cv2.resize(rot, (self.resize_w, self.resize_h)) if self.do_resize else rot
+            resized_qbinary = cv_toBinary(resized_q, self.do_smooth)
+
+            resized_q_flip = cv2.resize(rot_flip, (self.resize_w, self.resize_h)) if self.do_resize else rot_flip
+            resized_qbinary_flip = cv_toBinary(resized_q_flip, self.do_smooth)
+
+            c0, _ = cv2.findContours(resized_qbinary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+            cq = self._sample_contour_points(max(c0, key=len), self.sample_rate) if self.do_sample else max(c0, key=len)
+            c0_flip, _ = cv2.findContours(resized_qbinary_flip, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+            cq_flip = self._sample_contour_points(max(c0_flip, key=len), self.sample_rate) if self.do_sample else max(c0, key=len)
+            self.img_query_group.append(rot)
+            self.img_query_group.append(rot_flip)
+            self.counter_query_group.append(cq)
+            self.counter_query_group.append(cq_flip)
+
+
         if self.method == 'hu':
             for i,image_path in enumerate(self.img_paths):
                 self.step_signal.emit(i + 1)
@@ -89,12 +126,6 @@ class ImageDB(QThread):
             '''
             Shape based methods
             '''
-
-            resized_q = cv2.resize(img, (self.resize_w,self.resize_h)) if self.do_resize else img
-            resized_qbinary = cv_toBinary(resized_q, self.do_smooth)
-            _, c0, _ = cv2.findContours(resized_qbinary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_TC89_KCOS)
-
-            cq = self._sample_contour_points(max(c0, key=len), self.sample_rate) if self.do_sample else max(c0, key=len)
             if self.method == 'idsc':
                 dist = euclidean
                 idsc = IDSC()
@@ -115,50 +146,53 @@ class ImageDB(QThread):
             elif self.method=='scd':
                 scd = cv2.createShapeContextDistanceExtractor()
                 scd.setRotationInvariant(self.rotation_invariant)
-                print(scd.getRotationInvariant())
-                for i,image_path in enumerate(self.img_paths):
+                for i, image_path in enumerate(self.img_paths):
                     print(image_path,end =" ")
                     self.step_signal.emit(i+1)
                     resized_mbinary = cv_toBinary(cv2.resize(cv_imread(image_path), (self.resize_w,self.resize_h)) if self.do_resize else cv_imread(image_path),self.do_smooth)
                     blank = 255 - np.zeros(resized_mbinary.shape,np.uint8)
-                    _, c1, _ = cv2.findContours(resized_mbinary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+                    c1, _ = cv2.findContours(resized_mbinary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
 
                     cm = self._sample_contour_points(max(c1, key=len), self.sample_rate) if self.do_sample else max(c1, key=len)
                     if self.visualize:
-                        resized_mbinary =  cv2.drawContours(cv2.cvtColor(resized_mbinary, cv2.COLOR_GRAY2BGR), [cm], 0, (0,0,255),thickness=1)
+                        resized_mbinary = cv2.drawContours(cv2.cvtColor(resized_mbinary, cv2.COLOR_GRAY2BGR), [cm], 0, (0,0,255),thickness=1)
                         cv2.imshow('aa', resized_mbinary)
-                        cv2.waitKey(10)
-                    if self.save:
+                        cv2.waitKey(1)
+                    if self.save_countours:
                         print(cm.shape)
                         save_path = image_path.replace('\\', '/')
-                        save_path = save_path.replace('轮廓图','counters')
+                        save_path = save_path.replace('轮廓图', 'counters')
                         name = save_path.split('/')[-1]
-                        print('name',name)
-                        save_dir = save_path.replace(name,'')
-                        print('save_dir',save_dir)
+                        save_dir = save_path.replace(name, '')
                         if not os.path.exists(save_dir):
                             os.makedirs(save_dir)
                         for i in cm:
-                            blank[int(i[0][1]),int(i[0][0])] = 0
-                            # blank = cv2.circle(blank, (i[0][0],i[0][1]),1,(0,0,0),-1)
-                        print('save_path',save_path)
-                        # save_path = save_path.replace('/','\\\\')
+                            blank[int(i[0][1]), int(i[0][0])] = 0
                         cv2.imencode('.jpg', blank)[1].tofile(save_path)
 
-                    print(len(cm), end= " ")
-                    scd.setIterations(10)
-                    sim = scd.computeDistance(cq,cm)
-                    print(sim)
-                    sim_dict[image_path] = sim
-                    sorted_list = sorted(sim_dict.items(), key=lambda x: x[1])
+                    print(len(cm), end=" ")
+                    scd.setIterations(self.iterations)
+                    min_dist = sys.maxsize
+                    flipped = False
+                    rot_angle = 0
+                    for i, cq in enumerate(self.counter_query_group):
+                        dist = scd.computeDistance(cq,cm)
+                        if dist < min_dist:
+                            min_dist = dist
+                            flipped = i % 2==1
+                            rot_angle = i//2*self.rot_angle
 
-            elif self.method=='hausdorff':
+                    print(dist, "flip:", flipped, "rot_angle:", rot_angle)
+                    sim_dict[image_path] = (min_dist,flipped, rot_angle)
+                    sorted_list = sorted(sim_dict.items(), key=lambda x: x[1][0])
+
+            elif self.method == 'hausdorff':
                 hsd = cv2.createHausdorffDistanceExtractor()
                 for i,image_path in enumerate(self.img_paths):
                     print(image_path)
                     self.step_signal.emit(i+1)
                     resized_mbinary = cv_toBinary(cv2.resize(cv_imread(image_path), (self.resize_w,self.resize_h)) if self.do_resize else cv_imread(image_path),self.do_smooth)
-                    _, c1, _ = cv2.findContours(resized_mbinary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_TC89_KCOS)
+                    c1, _ = cv2.findContours(resized_mbinary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_TC89_KCOS)
                     cm = self._sample_contour_points(max(c1, key=len),self.sample_rate) if self.do_sample else max(c1, key=len)
                     sim = hsd.computeDistance(cq,cm)
                     sim_dict[image_path] = sim
